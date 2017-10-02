@@ -8,7 +8,7 @@ import (
 
 	log "github.com/mgutz/logxi/v1"
 
-	"github.com/blacklabeldata/grim"
+	// "github.com/blacklabeldata/grim"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/context"
 )
@@ -44,37 +44,47 @@ func New(cfg *Config) (server SSHServer, err error) {
 		err = e
 		return
 	}
-	server.listener = listener
-	server.Addr = listener.Addr().(*net.TCPAddr)
-	server.config = cfg
-	server.reaper = grim.ReaperWithContext(cfg.Context)
-	return
+
+	ctx, cancel := context.WithCancel(cfg.Context)
+	return SSHServer{ctx, cancel, make(chan struct{}), cfg, listener.Addr().(*net.TCPAddr), listener}, nil
+	// server.listener = listener
+	// server.Addr = listener.Addr().(*net.TCPAddr)
+	// server.config = cfg
+	// server.reaper = grim.ReaperWithContext(cfg.Context)
+	// return
 }
 
 // SSHServer handles all the incoming connections as well as handler dispatch.
 type SSHServer struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	doneCh   chan struct{}
 	config   *Config
 	Addr     *net.TCPAddr
 	listener *net.TCPListener
-	reaper   grim.GrimReaper
+	// reaper   grim.GrimReaper
 }
 
 // Start starts accepting client connections. This method is non-blocking.
 func (s *SSHServer) Start() {
 	s.config.Logger.Info("Starting SSH server", "addr", s.config.Bind)
-	s.reaper.SpawnFunc(s.listen)
+	// s.reaper.SpawnFunc(s.listen)
+	go s.listen()
 }
 
 // Stop stops the server and kills all goroutines. This method is blocking.
 func (s *SSHServer) Stop() {
-	s.reaper.Kill()
+	// s.reaper.Kill()
+	// s.reaper.Wait()
+	s.cancel()
 	s.config.Logger.Info("Shutting down SSH server...")
-	s.reaper.Wait()
+	<-s.doneCh
 }
 
 // listen accepts new connections and handles the conversion from TCP to SSH connections.
-func (s *SSHServer) listen(c context.Context) {
+func (s *SSHServer) listen() {
 	defer s.listener.Close()
+	defer close(s.doneCh)
 
 	for {
 		// Accepts will only block for 1s
@@ -83,7 +93,7 @@ func (s *SSHServer) listen(c context.Context) {
 		select {
 
 		// Stop server on channel receive
-		case <-c.Done():
+		case <-s.ctx.Done():
 			s.config.Logger.Debug("Context Completed")
 			return
 		default:
@@ -101,13 +111,15 @@ func (s *SSHServer) listen(c context.Context) {
 
 			// Handle connection
 			s.config.Logger.Info("Successful TCP connection:", tcpConn.RemoteAddr().String())
-			s.reaper.Spawn(&tcpHandler{
+
+			handler := &tcpHandler{
 				logger:         s.config.Logger,
 				conn:           tcpConn,
 				config:         s.config.sshConfig,
 				dispatcher:     s.config.Dispatcher,
 				requestHandler: s.config.Consumer,
-			})
+			}
+			handler.Execute(s.ctx)
 		}
 	}
 }
@@ -128,16 +140,16 @@ func (t *tcpHandler) Execute(c context.Context) {
 	default:
 	}
 
-	// Create reaper
-	g := grim.ReaperWithContext(c)
-	defer g.Wait()
+	// // Create reaper
+	// g := grim.ReaperWithContext(c)
+	// defer g.Wait()
 
 	// Convert to SSH connection
 	sshConn, channels, requests, err := ssh.NewServerConn(t.conn, t.config)
 	if err != nil {
 		t.logger.Warn("SSH handshake failed:", "addr", t.conn.RemoteAddr().String(), "error", err)
 		t.conn.Close()
-		g.Kill()
+		// g.Kill()
 		return
 	}
 
@@ -158,22 +170,23 @@ OUTER:
 		select {
 		case <-c.Done():
 			break OUTER
-		case <-g.Dead():
-			break OUTER
+		// case <-g.Dead():
+		// 	break OUTER
 		case ch := <-channels:
 
 			// Check if chan was closed
 			if ch == nil {
 				break OUTER
 			}
+			go t.dispatcher.Dispatch(c, sshConn, ch)
 
 			// Handle the channel
-			g.SpawnFunc(func(ctx context.Context) {
-				t.dispatcher.Dispatch(ctx, sshConn, ch)
-				return
-			})
+			// g.SpawnFunc(func(ctx context.Context) {
+			// 	t.dispatcher.Dispatch(ctx, sshConn, ch)
+			// 	return
+			// })
 		}
 	}
 
-	g.Kill()
+	// g.Kill()
 }

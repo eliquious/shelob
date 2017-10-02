@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,10 +10,10 @@ import (
 	"github.com/blacklabeldata/sshh"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/terminal"
-	tomb "gopkg.in/tomb.v2"
+	// tomb "gopkg.in/tomb.v2"
 )
 
-func NewShellHandler(logger log.Logger) sshh.SSHHandler {
+func NewShellHandler(logger log.Logger) sshh.Handler {
 	return &shellHandler{logger}
 }
 
@@ -20,61 +21,63 @@ type shellHandler struct {
 	logger log.Logger
 }
 
-func (s *shellHandler) Handle(parentTomb tomb.Tomb, sshConn *ssh.ServerConn, channel ssh.Channel, requests <-chan *ssh.Request) error {
-	defer channel.Close()
+func (s *shellHandler) Handle(ctx *sshh.Context) error {
+	// ctx context.Context, sshConn *ssh.ServerConn, channel ssh.Channel, requests <-chan *ssh.Request
+	defer ctx.Channel.Close()
 	s.logger.Info("WooHoo!!! Inside Handler!")
 
 	// Create tomb for terminal goroutines
-	var t tomb.Tomb
+	// var t tomb.Tomb
 
 	// Sessions have out-of-band requests such as "shell",
 	// "pty-req" and "env".  Here we handle only the
 	// "shell" request.
-	t.Go(func() error {
-	OUTER:
-		for {
-			select {
-			case <-parentTomb.Dying():
-				t.Kill(nil)
+	// t.Go(func() error {
+OUTER:
+	for {
+		select {
+		case <-ctx.Context.Done():
+			// t.Kill(nil)
+			break OUTER
+		case req := <-ctx.Requests:
+			if req == nil {
 				break OUTER
-			case req := <-requests:
-				if req == nil {
-					break OUTER
-				}
-
-				ok := false
-				switch req.Type {
-				case "shell":
-					ok = true
-
-					if len(req.Payload) > 0 {
-						// fmt.Println(string(req.Payload))
-
-						// We don't accept any
-						// commands, only the
-						// default shell.
-						ok = false
-					}
-
-				case "pty-req":
-					// Responding 'ok' here will let the client
-					// know we have a pty ready for input
-					ok = true
-
-					t.Go(func() error {
-						return s.startTerminal(t, sshConn, channel)
-					})
-				}
-
-				req.Reply(ok, nil)
 			}
+
+			ok := false
+			switch req.Type {
+			case "shell":
+				ok = true
+
+				if len(req.Payload) > 0 {
+					// fmt.Println(string(req.Payload))
+
+					// We don't accept any
+					// commands, only the
+					// default shell.
+					ok = false
+				}
+
+			case "pty-req":
+				// Responding 'ok' here will let the client
+				// know we have a pty ready for input
+				ok = true
+
+				go s.startTerminal(ctx.Context, ctx.Connection, ctx.Channel)
+				// t.Go(func() error {
+				// })
+			}
+
+			req.Reply(ok, nil)
 		}
-		return nil
-	})
-	return t.Wait()
+	}
+	return nil
+	// })
+	// return t.Wait()
+	// return nil
 }
 
-func (s *shellHandler) startTerminal(parentTomb tomb.Tomb, sshConn *ssh.ServerConn, channel ssh.Channel) error {
+func (s *shellHandler) startTerminal(ctx context.Context, sshConn *ssh.ServerConn, channel ssh.Channel) error {
 	defer channel.Close()
 
 	prompt := ">>> "
@@ -101,7 +104,7 @@ func (s *shellHandler) startTerminal(parentTomb tomb.Tomb, sshConn *ssh.ServerCo
 	for {
 
 		select {
-		case <-parentTomb.Dying():
+		case <-ctx.Done():
 			return nil
 		default:
 			s.logger.Info("Reading line...")

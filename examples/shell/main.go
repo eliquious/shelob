@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -43,11 +44,15 @@ func main() {
 
 	// Setup server config
 	config := sshh.Config{
+		Context:  context.Background(),
 		Deadline: time.Second,
 		Logger:   logger,
 		Bind:     ":9022",
-		Handlers: map[string]sshh.SSHHandler{
-			"session": NewShellHandler(logger),
+		Dispatcher: &sshh.SimpleDispatcher{
+			Logger: logger,
+			Handlers: map[string]sshh.Handler{
+				"session": NewShellHandler(logger),
+			},
 		},
 		PrivateKey: privateKey,
 		PasswordCallback: func(conn ssh.ConnMetadata, password []byte) (perm *ssh.Permissions, err error) {
@@ -75,7 +80,7 @@ func main() {
 	}
 
 	// Create SSH server
-	sshServer, err := sshh.NewSSHServer(&config)
+	sshServer, err := sshh.New(&config)
 	if err != nil {
 		logger.Error("SSH Server could not be configured", "error", err.Error())
 		return

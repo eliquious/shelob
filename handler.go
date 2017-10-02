@@ -28,6 +28,7 @@ type Context struct {
 	Context     context.Context
 	Channel     ssh.Channel
 	Requests    <-chan *ssh.Request
+	Connection  *ssh.ServerConn
 }
 
 type RequestConsumer interface {

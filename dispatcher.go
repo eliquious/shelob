@@ -50,9 +50,11 @@ func (u *SimpleDispatcher) Dispatch(c context.Context, conn *ssh.ServerConn, ch 
 
 	// Handle the channel
 	ctx = &Context{
-		Context:  c,
-		Channel:  channel,
-		Requests: requests,
+		Context:     c,
+		Channel:     channel,
+		Requests:    requests,
+		ChannelType: chType,
+		Connection:  conn,
 	}
 	err = handler.Handle(ctx)
 	if err != nil {
