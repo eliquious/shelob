@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/blacklabeldata/sshh/router"
-	log "github.com/mgutz/logxi/v1"
+	"github.com/eliquious/sshh/router"
+	"github.com/rs/xlog"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/context"
@@ -16,7 +16,7 @@ type Dispatcher interface {
 }
 
 type SimpleDispatcher struct {
-	Logger       log.Logger
+	Logger       xlog.Logger
 	Handlers     map[string]Handler
 	PanicHandler PanicHandler
 	NotFound     Handler
@@ -65,7 +65,7 @@ func (u *SimpleDispatcher) Dispatch(c context.Context, conn *ssh.ServerConn, ch 
 }
 
 type UrlDispatcher struct {
-	Logger log.Logger
+	Logger xlog.Logger
 	Router *router.Router
 }
 
@@ -124,7 +124,7 @@ func (u *UrlDispatcher) Dispatch(c context.Context, conn *ssh.ServerConn, ch ssh
 	}
 }
 
-func reject(chType string, uri *url.URL, ch ssh.NewChannel, logger log.Logger) bool {
+func reject(chType string, uri *url.URL, ch ssh.NewChannel, logger xlog.Logger) bool {
 	if uri.Scheme != "" {
 		logger.Warn("URI schemes not supported", "type", chType)
 		ch.Reject(SchemeNotSupported, "schemes are not supported in the channel URI")

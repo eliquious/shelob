@@ -4,7 +4,8 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/mgutz/logxi/v1"
+	// log "github.com/mgutz/logxi/v1"
+	"github.com/rs/xlog"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/context"
 )
@@ -29,7 +30,7 @@ type Config struct {
 	Consumer RequestConsumer
 
 	// Logger logs errors and debug output for the SSH server.
-	Logger log.Logger
+	Logger xlog.Logger
 
 	// Bind specifies the Bind address the SSH server will listen on.
 	Bind string

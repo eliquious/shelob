@@ -5,20 +5,21 @@ import (
 	"fmt"
 	"strings"
 
-	log "github.com/mgutz/logxi/v1"
+	// log "github.com/mgutz/logxi/v1"
+	"github.com/rs/xlog"
 
-	"github.com/blacklabeldata/sshh"
+	"github.com/eliquious/sshh"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/terminal"
 	// tomb "gopkg.in/tomb.v2"
 )
 
-func NewShellHandler(logger log.Logger) sshh.Handler {
+func NewShellHandler(logger xlog.Logger) sshh.Handler {
 	return &shellHandler{logger}
 }
 
 type shellHandler struct {
-	logger log.Logger
+	logger xlog.Logger
 }
 
 func (s *shellHandler) Handle(ctx *sshh.Context) error {
@@ -110,7 +111,7 @@ func (s *shellHandler) startTerminal(ctx context.Context, sshConn *ssh.ServerCon
 			s.logger.Info("Reading line...")
 			input, err := term.ReadLine()
 			if err != nil {
-				fmt.Errorf("Readline() error")
+				// fmt.Errorf("Readline() error")
 				return err
 			}
 
@@ -131,5 +132,5 @@ func (s *shellHandler) startTerminal(ctx context.Context, sshConn *ssh.ServerCon
 			}
 		}
 	}
-	return nil
+	// return nil
 }

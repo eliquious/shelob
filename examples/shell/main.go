@@ -7,8 +7,9 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/blacklabeldata/sshh"
-	log "github.com/mgutz/logxi/v1"
+	"github.com/eliquious/sshh"
+	// log "github.com/mgutz/logxi/v1"
+	"github.com/rs/xlog"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -33,8 +34,11 @@ LZxh0eGWnXXd+Os/wOVMSzkAWuzc4VTxMUnk/yf13IA=
 func main() {
 
 	// Create logger
-	writer := log.NewConcurrentWriter(os.Stdout)
-	logger := log.NewLogger(writer, "sshh")
+	// writer := log.NewConcurrentWriter(os.Stdout)
+	// logger := log.NewLogger(writer, "sshh")
+	logger := xlog.New(xlog.Config{
+		Output: xlog.NewConsoleOutput(),
+	})
 
 	// Get private key
 	privateKey, err := ssh.ParsePrivateKey([]byte(privateKey))

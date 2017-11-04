@@ -8,7 +8,7 @@ import (
 	"time"
 
 	sshmocks "github.com/blacklabeldata/mockery/ssh"
-	"github.com/blacklabeldata/sshh/router"
+	"github.com/eliquious/sshh/router"
 	log "github.com/mgutz/logxi/v1"
 
 	"github.com/stretchr/testify/suite"

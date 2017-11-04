@@ -6,7 +6,8 @@ import (
 	"net"
 	"time"
 
-	log "github.com/mgutz/logxi/v1"
+	// log "github.com/mgutz/logxi/v1"
+	"github.com/rs/xlog"
 
 	// "github.com/blacklabeldata/grim"
 	"golang.org/x/crypto/ssh"
@@ -125,7 +126,7 @@ func (s *SSHServer) listen() {
 }
 
 type tcpHandler struct {
-	logger         log.Logger
+	logger         xlog.Logger
 	conn           net.Conn
 	config         *ssh.ServerConfig
 	dispatcher     Dispatcher

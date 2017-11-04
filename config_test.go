@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blacklabeldata/sshh/router"
+	"github.com/eliquious/sshh/router"
 	log "github.com/mgutz/logxi/v1"
 
 	"github.com/stretchr/testify/assert"
