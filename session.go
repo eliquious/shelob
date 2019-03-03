@@ -62,8 +62,8 @@ type Session interface {
 type SessionHandler func(ctx context.Context, s Session) int
 
 // NewSessionChannelHandler creates a new ChannelHandler for session channels.
-func NewSessionChannelHandler(handler SessionHandler, allowPty bool) ChannelHandler {
-	return nil
+func NewSessionChannelHandler(handler SessionHandler, allowPty bool, allowAgentFwd bool) ChannelHandler {
+	return &sessionChannelHandler{handler, allowPty, allowAgentFwd}
 }
 
 type sessionChannelHandler struct {
