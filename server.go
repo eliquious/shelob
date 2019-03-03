@@ -1,15 +1,11 @@
 package sshh
 
 import (
-	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
-	// log "github.com/mgutz/logxi/v1"
-	"github.com/rs/xlog"
-
-	// "github.com/blacklabeldata/grim"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/context"
 )
@@ -17,177 +13,267 @@ import (
 // New creates a new server with the given config. The server will call `cfg.SSHConfig()` to setup
 // the server. If an error occurs it will be returned. If the Bind address is empty or invalid
 // an error will be returned. If there is an error starting the TCP server, the error will be returned.
-func New(cfg *Config) (server SSHServer, err error) {
-	if cfg.Context == nil {
-		return SSHServer{}, errors.New("Config has no context")
+func New(ctx context.Context, conf *Config) (*Server, error) {
+
+	// Set default max deadline of 1 second
+	if conf.MaxDeadline == 0 {
+		conf.MaxDeadline = time.Second
 	}
 
-	// Create ssh config for server
-	sshConfig := cfg.SSHConfig()
-	cfg.sshConfig = sshConfig
+	// Setup the SSH server config
+	sshConfig := &ssh.ServerConfig{
+		NoClientAuth:      false,
+		PasswordCallback:  conf.PasswordCallback,
+		PublicKeyCallback: conf.PublicKeyCallback,
+		AuthLogCallback:   conf.AuthLogCallback,
+	}
+	sshConfig.AddHostKey(conf.PrivateKey)
+
+	ctx, cancel := context.WithCancel(ctx)
+	closeCh := make(chan *net.TCPConn, 1)
+	doneCh := make(chan struct{})
+	return &Server{ctx, cancel, closeCh, doneCh, conf, sshConfig, nil, nil}, nil
+}
+
+// Server handles all the incoming connections as well as handler dispatch.
+type Server struct {
+	ctx       context.Context
+	cancel    context.CancelFunc
+	closeCh   chan *net.TCPConn
+	doneCh    chan struct{}
+	config    *Config
+	sshConfig *ssh.ServerConfig
+
+	Addr     *net.TCPAddr
+	listener *net.TCPListener
+}
+
+// ListenAndServe starts accepting client connections.
+func (s *Server) ListenAndServe() error {
+	s.handleEvent(&ServerStartedEvent{})
 
 	// Validate the ssh bind addr
-	if cfg.Bind == "" {
-		err = fmt.Errorf("ssh server: Empty SSH bind address")
-		return
+	if s.config.Addr == "" {
+		s.config.Addr = ":22"
 	}
 
 	// Open SSH socket listener
-	sshAddr, e := net.ResolveTCPAddr("tcp", cfg.Bind)
+	sshAddr, e := net.ResolveTCPAddr("tcp", s.config.Addr)
 	if e != nil {
-		err = fmt.Errorf("ssh server: Invalid tcp address")
-		return
+		return fmt.Errorf("ssh server: Invalid tcp address")
 	}
 
 	// Create listener
-	listener, e := net.ListenTCP("tcp", sshAddr)
-	if e != nil {
-		err = e
-		return
+	listener, err := net.ListenTCP("tcp", sshAddr)
+	if err != nil {
+		return err
 	}
+	s.Addr = listener.Addr().(*net.TCPAddr)
+	s.listener = listener
+	s.handleEvent(&ListenerOpenedEvent{s.Addr})
 
-	ctx, cancel := context.WithCancel(cfg.Context)
-	return SSHServer{ctx, cancel, make(chan struct{}), cfg, listener.Addr().(*net.TCPAddr), listener}, nil
-	// server.listener = listener
-	// server.Addr = listener.Addr().(*net.TCPAddr)
-	// server.config = cfg
-	// server.reaper = grim.ReaperWithContext(cfg.Context)
-	// return
-}
-
-// SSHServer handles all the incoming connections as well as handler dispatch.
-type SSHServer struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	doneCh   chan struct{}
-	config   *Config
-	Addr     *net.TCPAddr
-	listener *net.TCPListener
-	// reaper   grim.GrimReaper
-}
-
-// Start starts accepting client connections. This method is non-blocking.
-func (s *SSHServer) Start() {
-	s.config.Logger.Info("Starting SSH server", "addr", s.config.Bind)
-	// s.reaper.SpawnFunc(s.listen)
-	go s.listen()
+	s.listen()
+	return nil
 }
 
 // Stop stops the server and kills all goroutines. This method is blocking.
-func (s *SSHServer) Stop() {
-	// s.reaper.Kill()
-	// s.reaper.Wait()
+func (s *Server) Stop() {
 	s.cancel()
-	s.config.Logger.Info("Shutting down SSH server...")
+
+	// Shutting down SSH server
+	s.handleEvent(&ServerStoppedEvent{})
 	<-s.doneCh
 }
 
+func (s *Server) handleEvent(evt Event) {
+	if s.config.EventHandler != nil {
+		s.config.EventHandler(evt)
+	}
+}
+
 // listen accepts new connections and handles the conversion from TCP to SSH connections.
-func (s *SSHServer) listen() {
-	defer s.listener.Close()
+func (s *Server) listen() {
 	defer close(s.doneCh)
 
+	var wg sync.WaitGroup
+	var openConnections int
+	clientConnections := make(map[string]int)
+
+	initialDeadline := 5 * time.Millisecond
+	deadline := initialDeadline
+OUTER:
 	for {
-		// Accepts will only block for 1s
-		s.listener.SetDeadline(time.Now().Add(s.config.Deadline))
+		if deadline > s.config.MaxDeadline {
+			deadline = s.config.MaxDeadline
+		}
+
+		// Accepts will only block for deadline
+		s.listener.SetDeadline(time.Now().Add(deadline))
 
 		select {
 
 		// Stop server on channel receive
 		case <-s.ctx.Done():
-			s.config.Logger.Debug("Context Completed")
-			return
+			s.listener.Close()
+			s.handleEvent(&ListenerClosedEvent{})
+			break OUTER
+		case tcpConn := <-s.closeCh:
+			wg.Done()
+			deadline = initialDeadline
+
+			openConnections--
+			tcpAddr := tcpConn.RemoteAddr().(*net.TCPAddr)
+			if _, ok := clientConnections[tcpAddr.IP.String()]; ok {
+				clientConnections[tcpAddr.IP.String()]--
+			}
+
+			s.handleEvent(&ConnectionClosedEvent{
+				LocalAddr:  tcpConn.LocalAddr(),
+				RemoteAddr: tcpConn.RemoteAddr(),
+			})
+			continue
 		default:
 
 			// Accept new connection
-			tcpConn, err := s.listener.Accept()
+			conn, err := s.listener.Accept()
 			if err != nil {
+
+				// Connection timeout
 				if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
-					s.config.Logger.Debug("Connection timeout...")
+
+					// Increase timeout deadline
+					deadline *= 2
+
 				} else {
-					s.config.Logger.Warn("Connection failed", "error", err)
+
+					// Connection failed
+					s.handleEvent(&ConnectionFailedEvent{})
 				}
 				continue
 			}
+			// Successful connection. There may be more..
+			deadline = initialDeadline
+
+			// Get TCP connection
+			tcpConn := conn.(*net.TCPConn)
+			tcpAddr := tcpConn.RemoteAddr().(*net.TCPAddr)
+			ip := tcpAddr.IP.String()
+
+			// Check connection limit
+			if s.config.MaxConnections > 0 && openConnections >= s.config.MaxConnections {
+
+				// Too many connections; Close connection
+				tcpConn.Close()
+				s.handleEvent(&ConnectionClosedEvent{
+					LocalAddr:  tcpConn.LocalAddr(),
+					RemoteAddr: tcpConn.RemoteAddr(),
+				})
+				continue
+			}
+
+			// Check max connections per IP
+			if s.config.MaxClientConnections > 0 {
+				if val, ok := clientConnections[ip]; ok && val >= s.config.MaxClientConnections {
+
+					// Too many connections per IP; Close connection
+					tcpConn.Close()
+					s.handleEvent(&ConnectionClosedEvent{
+						LocalAddr:  tcpConn.LocalAddr(),
+						RemoteAddr: tcpConn.RemoteAddr(),
+					})
+					continue
+				}
+			}
+
+			// Increment connection counters
+			wg.Add(1)
+			openConnections++
+			clientConnections[ip]++
+
+			// Max connections has been reached
+			if openConnections == s.config.MaxConnections {
+				s.handleEvent(&MaxConnectionsEvent{})
+			}
+
+			// Max client connections has been reached.
+			if clientConnections[ip] == s.config.MaxClientConnections {
+				s.handleEvent(&MaxClientConnectionsEvent{
+					LocalAddr:  tcpConn.LocalAddr(),
+					RemoteAddr: tcpConn.RemoteAddr(),
+				})
+			}
+
+			// Connection will automatically expire after the deadline
+			if s.config.MaxConnectionDuration > 0 {
+				tcpConn.SetDeadline(time.Now().Add(s.config.MaxConnectionDuration))
+			}
 
 			// Handle connection
-			s.config.Logger.Info("Successful TCP connection:", tcpConn.RemoteAddr().String())
-
-			handler := &tcpHandler{
-				logger:         s.config.Logger,
-				conn:           tcpConn,
-				config:         s.config.sshConfig,
-				dispatcher:     s.config.Dispatcher,
-				requestHandler: s.config.Consumer,
-			}
-			handler.Execute(s.ctx)
+			s.handleEvent(&ConnectionOpenedEvent{
+				LocalAddr:  tcpConn.LocalAddr(),
+				RemoteAddr: tcpConn.RemoteAddr(),
+			})
+			go s.handleTCPConn(tcpConn)
 		}
 	}
+
+	// Wait for all connections to close
+	wg.Wait()
 }
 
-type tcpHandler struct {
-	logger         xlog.Logger
-	conn           net.Conn
-	config         *ssh.ServerConfig
-	dispatcher     Dispatcher
-	requestHandler RequestConsumer
+func (s *Server) closeConn(tcpConn *net.TCPConn) {
+	tcpConn.Close()
+	s.closeCh <- tcpConn
 }
 
-func (t *tcpHandler) Execute(c context.Context) {
-	select {
-	case <-c.Done():
-		t.conn.Close()
-		return
-	default:
-	}
-
-	// // Create reaper
-	// g := grim.ReaperWithContext(c)
-	// defer g.Wait()
+func (s *Server) handleTCPConn(tcpConn *net.TCPConn) {
+	defer s.closeConn(tcpConn)
 
 	// Convert to SSH connection
-	sshConn, channels, requests, err := ssh.NewServerConn(t.conn, t.config)
+	sshConn, channels, requests, err := ssh.NewServerConn(tcpConn, s.sshConfig)
 	if err != nil {
-		t.logger.Warn("SSH handshake failed:", "addr", t.conn.RemoteAddr().String(), "error", err)
-		t.conn.Close()
-		// g.Kill()
+		s.handleEvent(&HandshakeFailedEvent{
+			Error:      err,
+			LocalAddr:  tcpConn.LocalAddr(),
+			RemoteAddr: tcpConn.RemoteAddr(),
+		})
 		return
 	}
+	s.handleEvent(&HandshakeSuccessfulEvent{
+		LocalAddr:  tcpConn.LocalAddr(),
+		RemoteAddr: tcpConn.RemoteAddr(),
+	})
 
 	// Close connection on exit
-	t.logger.Debug("Handshake successful")
 	defer sshConn.Close()
 	defer sshConn.Wait()
 
-	// Discard all out-of-channel requests
-	if t.requestHandler != nil {
-		go t.requestHandler.Consume(requests)
-	} else {
-		go ssh.DiscardRequests(requests)
+	// Handle global requests
+	ctx := WithServerConn(s.ctx, sshConn)
+	go s.handleRequests(ctx, requests)
+
+	// Handle connection channels
+	for ch := range channels {
+		handler, found := s.config.ChannelHandlers[ch.ChannelType()]
+		if !found {
+			ch.Reject(ssh.UnknownChannelType, "unsupported channel type")
+			continue
+		}
+		go handler.HandleChannel(ctx, ch)
 	}
+}
 
-OUTER:
-	for {
-		select {
-		case <-c.Done():
-			break OUTER
-		// case <-g.Dead():
-		// 	break OUTER
-		case ch := <-channels:
+func (s *Server) handleRequests(ctx context.Context, in <-chan *ssh.Request) {
+	for req := range in {
+		handler, found := s.config.RequestHandlers[req.Type]
+		if !found && req.WantReply {
+			req.Reply(false, nil)
+			continue
+		}
 
-			// Check if chan was closed
-			if ch == nil {
-				break OUTER
-			}
-			go t.dispatcher.Dispatch(c, sshConn, ch)
-
-			// Handle the channel
-			// g.SpawnFunc(func(ctx context.Context) {
-			// 	t.dispatcher.Dispatch(ctx, sshConn, ch)
-			// 	return
-			// })
+		ret, payload := handler.HandleRequest(ctx, req)
+		if req.WantReply {
+			req.Reply(ret, payload)
 		}
 	}
-
-	// g.Kill()
 }

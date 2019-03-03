@@ -34,8 +34,6 @@ LZxh0eGWnXXd+Os/wOVMSzkAWuzc4VTxMUnk/yf13IA=
 func main() {
 
 	// Create logger
-	// writer := log.NewConcurrentWriter(os.Stdout)
-	// logger := log.NewLogger(writer, "sshh")
 	logger := xlog.New(xlog.Config{
 		Output: xlog.NewConsoleOutput(),
 	})
@@ -48,10 +46,8 @@ func main() {
 
 	// Setup server config
 	config := sshh.Config{
-		Context:  context.Background(),
-		Deadline: time.Second,
-		Logger:   logger,
-		Bind:     ":9022",
+		MaxDeadline: 5 * time.Second,
+		Addr:        ":9022",
 		Dispatcher: &sshh.SimpleDispatcher{
 			Logger: logger,
 			Handlers: map[string]sshh.Handler{
@@ -84,14 +80,16 @@ func main() {
 	}
 
 	// Create SSH server
-	sshServer, err := sshh.New(&config)
+	sshServer, err := sshh.New(context.Background(), &config)
 	if err != nil {
 		logger.Error("SSH Server could not be configured", "error", err.Error())
 		return
 	}
 
 	// Start servers
-	sshServer.Start()
+	if err := sshServer.ListenAndServe(); err != nil {
+
+	}
 
 	// Handle signals
 	sig := make(chan os.Signal, 1)

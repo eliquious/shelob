@@ -1,39 +1,46 @@
 package sshh
 
 import (
-	"sync"
+	"net"
 	"time"
 
 	// log "github.com/mgutz/logxi/v1"
-	"github.com/rs/xlog"
+
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/net/context"
 )
 
-// Config is used to setup the SSHServer, including the server config and the SSHHandlers.
+// Config is used to setup the Server, including the server config and the Handlers.
 type Config struct {
-	sync.Mutex
 
-	// Context allows for lifecycle management of the server.
-	Context context.Context
+	// Addr specifies the bind address the SSH server will listen on.
+	Addr string
 
-	// Deadline is the maximum time the listener will block
+	// MaxConnections is the maximum connections allowed by the server.
+	MaxConnections int
+
+	// MaxClientConnections is the maximum connections from 1 IP address.
+	MaxClientConnections int
+
+	// MaxDeadline is the maximum time the listener will block
 	// between connections. As a consequence, this duration
 	// also sets the max length of time the SSH server will
 	// be unresponsive before shutting down.
-	Deadline time.Duration
+	MaxDeadline time.Duration
+
+	// MaxConnectionDuration is the maximum length of time a connection can stay open.
+	MaxConnectionDuration time.Duration
 
 	// Dispatcher handles all open channel requests and dispatches them to a handler.
 	Dispatcher Dispatcher
 
 	// Consumer processes all global ssh.Requests for the life of the connection.
-	Consumer RequestConsumer
+	// Consumer RequestConsumer
 
-	// Logger logs errors and debug output for the SSH server.
-	Logger xlog.Logger
+	// RequestHandlers is a map of RequestHandlers which handle certain global ssh.Requests.
+	RequestHandlers map[string]RequestHandler
 
-	// Bind specifies the Bind address the SSH server will listen on.
-	Bind string
+	// ChannelHandlers is a map of ChannelHandlers which handle SSH channels based on type.
+	ChannelHandlers map[string]ChannelHandler
 
 	// PrivateKey is added to the SSH config as a host key.
 	PrivateKey ssh.Signer
@@ -51,21 +58,9 @@ type Config struct {
 	// valid for the given user. For example, see CertChecker.Authenticate.
 	PublicKeyCallback func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error)
 
-	// sshConfig is used to verify incoming connections.
-	sshConfig *ssh.ServerConfig
-}
+	// ConnectionCallback allows for modification of the incoming network connection.
+	ConnectionCallback func(net.Conn)
 
-// SSHConfig returns an SSH server configuration. If the AuthLogCallback is nil at the
-// time this method is called, the default function will be used.
-func (c *Config) SSHConfig() *ssh.ServerConfig {
-
-	// Create server config
-	sshConfig := &ssh.ServerConfig{
-		NoClientAuth:      false,
-		PasswordCallback:  c.PasswordCallback,
-		PublicKeyCallback: c.PublicKeyCallback,
-		AuthLogCallback:   c.AuthLogCallback,
-	}
-	sshConfig.AddHostKey(c.PrivateKey)
-	return sshConfig
+	// EventHandler handles events for logging, etc. Must be non-blocking.
+	EventHandler EventHandler
 }
