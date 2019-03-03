@@ -10,9 +10,9 @@ import (
 	"golang.org/x/net/context"
 )
 
-// New creates a new server with the given config. The server will call `cfg.SSHConfig()` to setup
-// the server. If an error occurs it will be returned. If the Bind address is empty or invalid
-// an error will be returned. If there is an error starting the TCP server, the error will be returned.
+// New creates a new server with the given config. If the Bind address is invalid an
+// error will be returned when started. If there is an error starting the TCP server,
+// the error will be returned.
 func New(ctx context.Context, conf *Config) (*Server, error) {
 
 	// Set default max deadline of 1 second
@@ -20,19 +20,60 @@ func New(ctx context.Context, conf *Config) (*Server, error) {
 		conf.MaxDeadline = time.Second
 	}
 
-	// Setup the SSH server config
-	sshConfig := &ssh.ServerConfig{
-		NoClientAuth:      false,
-		PasswordCallback:  conf.PasswordCallback,
-		PublicKeyCallback: conf.PublicKeyCallback,
-		AuthLogCallback:   conf.AuthLogCallback,
+	// ServerConfig is required.
+	if conf.ServerConfig == nil {
+		return nil, fmt.Errorf("ssh.ServerConfig must be provided")
 	}
-	sshConfig.AddHostKey(conf.PrivateKey)
+
+	// Wrap provided public key callback to inject permission extensions
+	// for getting the public key information in the session.
+	if conf.ServerConfig.PublicKeyCallback != nil {
+		conf.ServerConfig.PublicKeyCallback = pubKeyCallbackWrapper(conf.ServerConfig.PublicKeyCallback)
+	}
+
+	// Add private key to ServerConfig
+	if conf.PrivateKey != nil {
+		conf.ServerConfig.AddHostKey(conf.PrivateKey)
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	closeCh := make(chan *net.TCPConn, 1)
 	doneCh := make(chan struct{})
-	return &Server{ctx, cancel, closeCh, doneCh, conf, sshConfig, nil, nil}, nil
+	return &Server{ctx, cancel, closeCh, doneCh, conf, conf.ServerConfig, nil, nil}, nil
+}
+
+// PublicKeyCallback represents the function type for Public Key auth in crypto/ssh.
+type PublicKeyCallback func(meta ssh.ConnMetadata, key ssh.PublicKey) (perm *ssh.Permissions, err error)
+
+const permKeyType = "pub-key-type"
+const permKeyData = "pub-key-data"
+
+// Inject the public key info into the permission extensions
+func pubKeyCallbackWrapper(cb PublicKeyCallback) PublicKeyCallback {
+	return func(meta ssh.ConnMetadata, key ssh.PublicKey) (perm *ssh.Permissions, err error) {
+		if cb == nil {
+			return nil, ssh.ErrNoAuth
+		}
+
+		perm, err = cb(meta, key)
+		if err != nil {
+			return nil, err
+		}
+
+		// Ensure perm.Extensions exists
+		if perm == nil {
+			perm = &ssh.Permissions{
+				Extensions: map[string]string{},
+			}
+		} else if perm != nil && perm.Extensions == nil {
+			perm.Extensions = map[string]string{}
+		}
+
+		// Add builtin extensions
+		perm.Extensions[permKeyType] = key.Type()
+		perm.Extensions[permKeyData] = string(key.Marshal())
+		return perm, nil
+	}
 }
 
 // Server handles all the incoming connections as well as handler dispatch.
@@ -229,8 +270,14 @@ func (s *Server) closeConn(tcpConn *net.TCPConn) {
 func (s *Server) handleTCPConn(tcpConn *net.TCPConn) {
 	defer s.closeConn(tcpConn)
 
+	// Allows for connection modification. Need to go back to net.Conn interface for easier wrapping.
+	var conn net.Conn = tcpConn
+	if s.config.ConnectionCallback != nil {
+		conn = s.config.ConnectionCallback(tcpConn)
+	}
+
 	// Convert to SSH connection
-	sshConn, channels, requests, err := ssh.NewServerConn(tcpConn, s.sshConfig)
+	sshConn, channels, requests, err := ssh.NewServerConn(conn, s.sshConfig)
 	if err != nil {
 		s.handleEvent(&HandshakeFailedEvent{
 			Error:      err,
@@ -249,7 +296,8 @@ func (s *Server) handleTCPConn(tcpConn *net.TCPConn) {
 	defer sshConn.Wait()
 
 	// Handle global requests
-	ctx := WithServerConn(s.ctx, sshConn)
+	ctx, cancel := context.WithCancel(WithServerConn(s.ctx, sshConn))
+	defer cancel()
 	go s.handleRequests(ctx, requests)
 
 	// Handle connection channels

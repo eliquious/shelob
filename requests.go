@@ -7,7 +7,8 @@ import (
 
 type contextKey string
 
-const keySSHConn contextKey = "ssh.ServerConn"
+const keySSHConn contextKey = "server-conn"
+const keyEventHandler contextKey = "event-handler"
 
 // WithServerConn adds a ssh.ServerConn to a context.
 func WithServerConn(ctx context.Context, sshConn *ssh.ServerConn) context.Context {

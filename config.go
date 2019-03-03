@@ -30,37 +30,21 @@ type Config struct {
 	// MaxConnectionDuration is the maximum length of time a connection can stay open.
 	MaxConnectionDuration time.Duration
 
-	// Dispatcher handles all open channel requests and dispatches them to a handler.
-	Dispatcher Dispatcher
-
-	// Consumer processes all global ssh.Requests for the life of the connection.
-	// Consumer RequestConsumer
-
 	// RequestHandlers is a map of RequestHandlers which handle certain global ssh.Requests.
 	RequestHandlers map[string]RequestHandler
 
 	// ChannelHandlers is a map of ChannelHandlers which handle SSH channels based on type.
 	ChannelHandlers map[string]ChannelHandler
 
-	// PrivateKey is added to the SSH config as a host key.
-	PrivateKey ssh.Signer
-
-	// AuthLogCallback, if non-nil, is called to log all authentication
-	// attempts.
-	AuthLogCallback func(conn ssh.ConnMetadata, method string, err error)
-
-	// PasswordCallback, if non-nil, is called when a user
-	// attempts to authenticate using a password.
-	PasswordCallback func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error)
-
-	// PublicKeyCallback, if non-nil, is called when a client attempts public
-	// key authentication. It must return true if the given public key is
-	// valid for the given user. For example, see CertChecker.Authenticate.
-	PublicKeyCallback func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error)
-
-	// ConnectionCallback allows for modification of the incoming network connection.
-	ConnectionCallback func(net.Conn)
+	// ConnectionCallback allows for modification of the incoming network connection and/or connection wrapping
+	ConnectionCallback func(net.Conn) net.Conn
 
 	// EventHandler handles events for logging, etc. Must be non-blocking.
 	EventHandler EventHandler
+
+	// PrivateKey is added to the SSH config as a host key.
+	PrivateKey ssh.Signer
+
+	// ServerConfig configures the underlying SSH server. It allows for full control of the authenication mechanisms.
+	ServerConfig *ssh.ServerConfig
 }
