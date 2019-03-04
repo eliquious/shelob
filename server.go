@@ -3,6 +3,7 @@ package sshh
 import (
 	"fmt"
 	"net"
+	"os/signal"
 	"sync"
 	"time"
 
@@ -47,6 +48,7 @@ type PublicKeyCallback func(meta ssh.ConnMetadata, key ssh.PublicKey) (perm *ssh
 
 const permKeyType = "pub-key-type"
 const permKeyData = "pub-key-data"
+const permKeyFingerprint = "pub-key-fingerprint"
 
 // Inject the public key info into the permission extensions
 func pubKeyCallbackWrapper(cb PublicKeyCallback) PublicKeyCallback {
@@ -72,6 +74,7 @@ func pubKeyCallbackWrapper(cb PublicKeyCallback) PublicKeyCallback {
 		// Add builtin extensions
 		perm.Extensions[permKeyType] = key.Type()
 		perm.Extensions[permKeyData] = string(key.Marshal())
+		perm.Extensions[permKeyFingerprint] = ssh.FingerprintLegacyMD5(key)
 		return perm, nil
 	}
 }
@@ -120,9 +123,6 @@ func (s *Server) ListenAndServe() error {
 // Stop stops the server and kills all goroutines. This method is blocking.
 func (s *Server) Stop() {
 	s.cancel()
-
-	// Shutting down SSH server
-	s.handleEvent(&ServerStoppedEvent{})
 	<-s.doneCh
 }
 
@@ -155,9 +155,17 @@ OUTER:
 
 		// Stop server on channel receive
 		case <-s.ctx.Done():
+			s.handleEvent(&ServerStoppedEvent{})
 			s.listener.Close()
 			s.handleEvent(&ListenerClosedEvent{})
 			break OUTER
+		case <-s.config.SignalChan:
+			s.cancel()
+
+			// Stop listening for signals and close channel
+			signal.Stop(s.config.SignalChan)
+			// close(s.config.SignalChan)
+			continue
 		case tcpConn := <-s.closeCh:
 			wg.Done()
 			deadline = initialDeadline
@@ -188,7 +196,7 @@ OUTER:
 				} else {
 
 					// Connection failed
-					s.handleEvent(&ConnectionFailedEvent{})
+					s.handleEvent(&ConnectionFailedEvent{Error: err})
 				}
 				continue
 			}
@@ -302,22 +310,45 @@ func (s *Server) handleTCPConn(tcpConn *net.TCPConn) {
 
 	// Handle connection channels
 	for ch := range channels {
+
 		handler, found := s.config.ChannelHandlers[ch.ChannelType()]
 		if !found {
 			ch.Reject(ssh.UnknownChannelType, "unsupported channel type")
-			continue
+
+			s.handleEvent(&UnknownChannelEvent{
+				Conn:        sshConn,
+				ChannelType: ch.ChannelType(),
+			})
+		} else {
+			s.handleEvent(&ChannelEvent{
+				Conn:        sshConn,
+				ChannelType: ch.ChannelType(),
+			})
+			go handler.HandleChannel(ctx, ch)
 		}
-		go handler.HandleChannel(ctx, ch)
 	}
 }
 
 func (s *Server) handleRequests(ctx context.Context, in <-chan *ssh.Request) {
+	conn, _ := SSHServerConn(ctx)
 	for req := range in {
 		handler, found := s.config.RequestHandlers[req.Type]
-		if !found && req.WantReply {
-			req.Reply(false, nil)
+		if !found {
+			s.handleEvent(&UnknownRequestEvent{
+				RequestType: req.Type,
+				Conn:        conn,
+			})
+
+			if req.WantReply {
+				req.Reply(false, nil)
+			}
 			continue
 		}
+
+		s.handleEvent(&RequestEvent{
+			RequestType: req.Type,
+			Conn:        conn,
+		})
 
 		ret, payload := handler.HandleRequest(ctx, req)
 		if req.WantReply {

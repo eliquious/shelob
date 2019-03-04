@@ -2,6 +2,7 @@ package sshh
 
 import (
 	"net"
+	"os"
 	"time"
 
 	// log "github.com/mgutz/logxi/v1"
@@ -44,6 +45,9 @@ type Config struct {
 
 	// PrivateKey is added to the SSH config as a host key.
 	PrivateKey ssh.Signer
+
+	// SignalChan recieves os.Signal for stopping the server with signals.
+	SignalChan chan os.Signal
 
 	// ServerConfig configures the underlying SSH server. It allows for full control of the authenication mechanisms.
 	ServerConfig *ssh.ServerConfig

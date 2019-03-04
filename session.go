@@ -12,7 +12,7 @@ import (
 	"golang.org/x/net/context"
 )
 
-// Session
+// Session represents a user's SSH session.
 type Session interface {
 	ssh.Channel
 
@@ -122,6 +122,10 @@ func (s *sessionChannelHandler) handleRequests(ctx context.Context, conn *ssh.Se
 				}(signalCh, signalBuffer)
 			}
 		case req := <-reqs:
+			if req == nil {
+				continue
+			}
+
 			switch req.Type {
 			case "shell", "exec":
 				sess.handle(ctx, req)

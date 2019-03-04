@@ -3,14 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/eliquious/sshh"
-	// log "github.com/mgutz/logxi/v1"
-	"github.com/rs/xlog"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/terminal"
 )
 
 var privateKey = `
@@ -34,78 +35,114 @@ LZxh0eGWnXXd+Os/wOVMSzkAWuzc4VTxMUnk/yf13IA=
 func main() {
 
 	// Create logger
-	logger := xlog.New(xlog.Config{
-		Output: xlog.NewConsoleOutput(),
-	})
+	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmicroseconds)
 
 	// Get private key
 	privateKey, err := ssh.ParsePrivateKey([]byte(privateKey))
 	if err != nil {
-		logger.Warn("Private key could not be parsed", "error", err.Error())
-	}
-
-	// Setup server config
-	config := sshh.Config{
-		MaxDeadline: 5 * time.Second,
-		Addr:        ":9022",
-		Dispatcher: &sshh.SimpleDispatcher{
-			Logger: logger,
-			Handlers: map[string]sshh.Handler{
-				"session": NewShellHandler(logger),
-			},
-		},
-		PrivateKey: privateKey,
-		PasswordCallback: func(conn ssh.ConnMetadata, password []byte) (perm *ssh.Permissions, err error) {
-			if conn.User() == "admin" && string(password) == "password" {
-
-				// Add username to permissions
-				perm = &ssh.Permissions{
-					Extensions: map[string]string{
-						"username": conn.User(),
-					},
-				}
-			} else {
-				err = fmt.Errorf("Invalid username or password")
-			}
-			return
-		},
-		AuthLogCallback: func(conn ssh.ConnMetadata, method string, err error) {
-			if err == nil {
-				logger.Info("Successful login", "user", conn.User(), "method", method)
-			}
-		},
-		// PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (perm *ssh.Permissions, err error) {
-		// 	return nil, fmt.Errorf("Unauthorized")
-		// },
-	}
-
-	// Create SSH server
-	sshServer, err := sshh.New(context.Background(), &config)
-	if err != nil {
-		logger.Error("SSH Server could not be configured", "error", err.Error())
-		return
-	}
-
-	// Start servers
-	if err := sshServer.ListenAndServe(); err != nil {
-
+		logger.Fatalf("Private key could not be parsed err=%s", err.Error())
 	}
 
 	// Handle signals
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, os.Kill)
 
-	// Wait for signal
-	logger.Info("Ready to serve requests")
+	// Setup server config
+	config := sshh.Config{
+		Addr:         ":9022",
+		MaxDeadline:  5 * time.Second,
+		PrivateKey:   privateKey,
+		SignalChan:   sig,
+		EventHandler: sshh.LoggingEventHandler(logger),
+		ChannelHandlers: map[string]sshh.ChannelHandler{
+			"session": sshh.NewSessionChannelHandler(func(ctx context.Context, s sshh.Session) int {
 
-	// Block until signal is received
-	<-sig
+				prompt := ">>> "
+				term := terminal.NewTerminal(s, prompt)
 
-	// Stop listening for signals and close channel
-	signal.Stop(sig)
-	close(sig)
+				// Get username
+				username := s.User()
 
-	// Shut down SSH server
-	logger.Info("Shutting down servers.")
-	sshServer.Stop()
+				// Write ascii text
+				term.Write([]byte(fmt.Sprintf("\r\n Nice job, %s! You are connected!\r\n", username)))
+				defer term.Write([]byte(fmt.Sprintf("\r\nGoodbye, %s!\r\n", username)))
+
+				logf := func(msg string, args ...interface{}) {
+					// Make Terminal raw
+					oldState, err := terminal.MakeRaw(0)
+					if err != nil {
+						return
+					}
+					defer terminal.Restore(0, oldState)
+					logger.Printf(msg+"\r\n", args...)
+				}
+
+				// Start REPL
+				for {
+
+					select {
+					case <-ctx.Done():
+						return 0
+					default:
+						logf("Reading line...")
+						input, err := term.ReadLine()
+						if err != nil {
+							return 1
+						}
+
+						// Process line
+						line := strings.TrimSpace(input)
+						if len(line) > 0 {
+
+							// Log input and handle exit requests
+							if line == "exit" || line == "quit" {
+								logf("Closing connection")
+								return 0
+							}
+
+							// Echo input
+							s.Write(term.Escape.Green)
+							s.Write([]byte(line + "\r\n"))
+							s.Write(term.Escape.Reset)
+						}
+					}
+				}
+			}, true, false),
+		},
+		ServerConfig: &ssh.ServerConfig{
+			PasswordCallback: func(conn ssh.ConnMetadata, password []byte) (perm *ssh.Permissions, err error) {
+				if conn.User() == "admin" && string(password) == "password" {
+
+					// Add username to permissions
+					perm = &ssh.Permissions{
+						Extensions: map[string]string{
+							"username": conn.User(),
+						},
+					}
+				} else {
+					err = fmt.Errorf("Invalid username or password")
+				}
+				return
+			},
+			AuthLogCallback: func(conn ssh.ConnMetadata, method string, err error) {
+				if err == nil {
+					logger.Printf("Successful login: user=%s method=%s\n", conn.User(), method)
+				}
+			},
+			PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (perm *ssh.Permissions, err error) {
+				return nil, fmt.Errorf("Unauthorized")
+			},
+		},
+	}
+
+	// Create SSH server
+	sshServer, err := sshh.New(context.Background(), &config)
+	if err != nil {
+		logger.Fatalf("SSH Server could not be configured error=%s", err.Error())
+	}
+
+	// Start servers
+	if err := sshServer.ListenAndServe(); err != nil {
+		logger.Printf("Server exited error=%s", err.Error())
+	}
 }
