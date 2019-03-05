@@ -1,4 +1,4 @@
-package sshh
+package shelob
 
 import (
 	"bytes"
@@ -48,6 +48,8 @@ type Session interface {
 	// Pty returns PTY information, a channel of window size changes, and a boolean
 	// of whether or not a PTY was accepted for this session.
 	Pty() (Pty, <-chan Window, bool)
+
+	WriteString(s string) (n int, err error)
 
 	// Signals registers a channel to receive signals sent from the client. The
 	// channel must handle signal sends or it will block the SSH request loop.
@@ -257,22 +259,31 @@ func (s *session) Write(p []byte) (n int, err error) {
 func (s *session) User() string {
 	return s.conn.User()
 }
+
 func (s *session) Close() error {
 	s.Channel.Close()
 	s.conn.Close()
 	return nil
 }
+
 func (s *session) LocalAddr() net.Addr {
 	return s.conn.LocalAddr()
 }
+
 func (s *session) RemoteAddr() net.Addr {
 	return s.conn.RemoteAddr()
 }
+
 func (s *session) Environ() []string {
 	return append([]string(nil), s.env...)
 }
+
 func (s *session) Command() []string {
 	return append([]string(nil), s.cmd...)
+}
+
+func (s *session) WriteString(msg string) (int, error) {
+	return s.Write([]byte(msg))
 }
 
 func (s *session) Exit(code int) error {
