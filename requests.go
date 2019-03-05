@@ -1,4 +1,4 @@
-package sshh
+package shelob
 
 import (
 	"golang.org/x/crypto/ssh"
