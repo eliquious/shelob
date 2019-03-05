@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eliquious/sshh"
+	"github.com/eliquious/shelob"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/terminal"
 )
@@ -48,14 +48,14 @@ func main() {
 	signal.Notify(sig, os.Interrupt, os.Kill)
 
 	// Setup server config
-	config := sshh.Config{
+	config := shelob.Config{
 		Addr:         ":9022",
 		MaxDeadline:  5 * time.Second,
 		PrivateKey:   privateKey,
 		SignalChan:   sig,
-		EventHandler: sshh.LoggingEventHandler(logger),
-		ChannelHandlers: map[string]sshh.ChannelHandler{
-			"session": sshh.NewSessionChannelHandler(func(ctx context.Context, s sshh.Session) int {
+		EventHandler: shelob.LoggingEventHandler(logger),
+		ChannelHandlers: map[string]shelob.ChannelHandler{
+			"session": shelob.NewSessionChannelHandler(func(ctx context.Context, s shelob.Session) int {
 
 				prompt := ">>> "
 				term := terminal.NewTerminal(s, prompt)
@@ -136,7 +136,7 @@ func main() {
 	}
 
 	// Create SSH server
-	sshServer, err := sshh.New(context.Background(), &config)
+	sshServer, err := shelob.New(context.Background(), &config)
 	if err != nil {
 		logger.Fatalf("SSH Server could not be configured error=%s", err.Error())
 	}
