@@ -1,7 +1,8 @@
-package sshh
+package shelob
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -11,7 +12,9 @@ import (
 )
 
 // DefaultHandler is the default session handler.
-var DefaultHandler SessionHandler
+var DefaultHandler SessionHandler = func(_ context.Context, s Session) int {
+	return 0
+}
 
 // Handle sets the default handler.
 func Handle(h SessionHandler) {
@@ -29,6 +32,11 @@ func ListenAndServe(addr string, opts ...OptionFunc) error {
 		RequestHandlers: map[string]RequestHandler{},
 		ChannelHandlers: map[string]ChannelHandler{},
 		ServerConfig:    &ssh.ServerConfig{},
+	}
+
+	// Verify shell handler
+	if _, ok := conf.ChannelHandlers["session"]; !ok {
+		conf.ChannelHandlers["session"] = NewSessionChannelHandler(DefaultHandler, true, false)
 	}
 
 	// Read opts
@@ -138,6 +146,71 @@ func WithSignalCh(ch chan os.Signal) OptionFunc {
 func WithServerConfig(c *ssh.ServerConfig) OptionFunc {
 	return func(conf *Config) error {
 		conf.ServerConfig = c
+		return nil
+	}
+}
+
+func WithPasswordAuth(user, password string) OptionFunc {
+	return func(conf *Config) error {
+		if conf.ServerConfig == nil {
+			return fmt.Errorf("err: server config is nil")
+		}
+
+		conf.ServerConfig.PasswordCallback = func(conn ssh.ConnMetadata, pw []byte) (perm *ssh.Permissions, err error) {
+			if conn.User() == user && string(pw) == password {
+				return &ssh.Permissions{}, nil
+			} else {
+				err = fmt.Errorf("Invalid username or password")
+			}
+			return
+		}
+		return nil
+	}
+}
+
+func WithPublicKeyAuth(pubkey ssh.PublicKey) OptionFunc {
+	return func(conf *Config) error {
+		if conf.ServerConfig == nil {
+			return fmt.Errorf("err: server config is nil")
+		}
+
+		wantedFingerprint := ssh.FingerprintLegacyMD5(pubkey)
+		conf.ServerConfig.PublicKeyCallback = func(conn ssh.ConnMetadata, key ssh.PublicKey) (perm *ssh.Permissions, err error) {
+			fingerprint := ssh.FingerprintLegacyMD5(key)
+			if fingerprint != wantedFingerprint {
+				return nil, fmt.Errorf("error: unauthorized")
+			}
+
+			perm = &ssh.Permissions{
+				Extensions: map[string]string{
+					permKeyType:        key.Type(),
+					permKeyData:        string(key.Marshal()),
+					permKeyFingerprint: fingerprint,
+				},
+			}
+			return perm, nil
+		}
+		return nil
+	}
+}
+
+func WithAuthLogCallback(cb func(conn ssh.ConnMetadata, method string, err error)) OptionFunc {
+	return func(conf *Config) error {
+		if conf.ServerConfig == nil {
+			return fmt.Errorf("err: server config is nil")
+		}
+
+		conf.ServerConfig.AuthLogCallback = cb
+		return nil
+	}
+}
+
+func WithNoClientAuth() OptionFunc {
+	return func(conf *Config) error {
+		if conf.ServerConfig == nil {
+			return fmt.Errorf("err: server config is nil")
+		}
+		conf.ServerConfig.NoClientAuth = true
 		return nil
 	}
 }
