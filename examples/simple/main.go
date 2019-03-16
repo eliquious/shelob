@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 
@@ -40,13 +41,14 @@ func main() {
 
 	shelob.Handle(func(ctx context.Context, s shelob.Session) int {
 		s.WriteString("\nThe world changed, and a single moment of time was filled with an hour of thought.\n\n")
+		s.WriteString(fmt.Sprintf("\nCommand: %q\n", s.Command()))
 		return 0
 	})
 
 	opts := []shelob.OptionFunc{
 		shelob.WithHostKey(privateKey),
 		shelob.WithPasswordAuth("admin", "password"),
-		// shelob.WithEventHandler(shelob.LoggingEventHandler(logger)),
+		shelob.WithEventHandler(shelob.LoggingEventHandler(logger)),
 	}
 	if err := shelob.ListenAndServe(":10022", opts...); err != nil {
 		logger.Fatalf("Server exited with error err=%s", err.Error())

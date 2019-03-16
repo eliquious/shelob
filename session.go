@@ -1,11 +1,12 @@
 package shelob
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"sync/atomic"
+
+	// "github.com/google/shlex"
 
 	"github.com/google/shlex"
 	"golang.org/x/crypto/ssh"
@@ -101,16 +102,35 @@ func (s *sessionChannelHandler) handleRequests(ctx context.Context, conn *ssh.Se
 	signalChCh := make(chan chan<- os.Signal)
 	signalBuffer := []os.Signal{}
 
+	// Close/exit channels
+	closeCh := make(chan struct{}, 0)
+	exitCh := make(chan int, 0)
+	exitErrorCh := make(chan error, 0)
+	defer close(closeCh)
+	defer close(exitCh)
+	defer close(exitErrorCh)
+
 	// Create session
 	sess := &session{
-		Channel:    ch,
-		conn:       conn,
-		signalChCh: signalChCh,
-		handler:    s.handler,
+		Channel:     ch,
+		conn:        conn,
+		signalChCh:  signalChCh,
+		closeCh:     closeCh,
+		exitCh:      exitCh,
+		exitErrorCh: exitErrorCh,
+		handler:     s.handler,
 	}
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-closeCh:
+			return
+		case code := <-exitCh:
+
+			status := struct{ Status uint32 }{uint32(code)}
+			_, err := sess.Channel.SendRequest("exit-status", false, ssh.Marshal(&status))
+			exitErrorCh <- err
 			return
 		case sigCh := <-signalChCh:
 			signalCh = sigCh
@@ -218,6 +238,10 @@ type session struct {
 	winch chan Window
 
 	signalChCh chan chan<- os.Signal
+
+	closeCh     chan struct{}
+	exitCh      chan int
+	exitErrorCh chan error
 }
 
 func (s *session) handle(ctx context.Context, req *ssh.Request) {
@@ -230,10 +254,19 @@ func (s *session) handle(ctx context.Context, req *ssh.Request) {
 	// Parse payload
 	var payload = struct{ Value string }{}
 	ssh.Unmarshal(req.Payload, &payload)
-	s.cmd, _ = shlex.Split(payload.Value)
+	s.cmd, _ = shlex.Split(trimQuotes(payload.Value))
 
 	// Run handler and exit when finished
 	go s.Exit(s.handler(ctx, s))
+}
+
+func trimQuotes(s string) string {
+	if len(s) >= 2 {
+		if c := s[len(s)-1]; s[0] == c && (c == '"' || c == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }
 
 func (s *session) hasBeenHandled() bool {
@@ -241,18 +274,18 @@ func (s *session) hasBeenHandled() bool {
 }
 
 func (s *session) Write(p []byte) (n int, err error) {
-	if s.pty != nil {
-		m := len(p)
-		// normalize \n to \r\n when pty is accepted.
-		// this is a hardcoded shortcut since we don't support terminal modes.
-		p = bytes.Replace(p, []byte{'\n'}, []byte{'\r', '\n'}, -1)
-		p = bytes.Replace(p, []byte{'\r', '\r', '\n'}, []byte{'\r', '\n'}, -1)
-		n, err = s.Channel.Write(p)
-		if n > m {
-			n = m
-		}
-		return
-	}
+	// if s.pty != nil {
+	// 	m := len(p)
+	// 	// normalize \n to \r\n when pty is accepted.
+	// 	// this is a hardcoded shortcut since we don't support terminal modes.
+	// 	p = bytes.Replace(p, []byte{'\n'}, []byte{'\r', '\n'}, -1)
+	// 	p = bytes.Replace(p, []byte{'\r', '\r', '\n'}, []byte{'\r', '\n'}, -1)
+	// 	n, err = s.Channel.Write(p)
+	// 	if n > m {
+	// 		n = m
+	// 	}
+	// 	return
+	// }
 	return s.Channel.Write(p)
 }
 
@@ -261,9 +294,8 @@ func (s *session) User() string {
 }
 
 func (s *session) Close() error {
-	s.Channel.Close()
-	s.conn.Close()
-	return nil
+	s.closeCh <- struct{}{}
+	return s.conn.Wait()
 }
 
 func (s *session) LocalAddr() net.Addr {
@@ -290,16 +322,18 @@ func (s *session) Exit(code int) error {
 	if !atomic.CompareAndSwapUint64(&s.exited, 0, 1) {
 		return fmt.Errorf("exit called more than once")
 	}
+	s.exitCh <- code
 
-	status := struct{ Status uint32 }{uint32(code)}
-	_, err := s.Channel.SendRequest("exit-status", false, ssh.Marshal(&status))
-	if err != nil {
-		return err
-	}
-	close(s.winch)
-	s.Channel.Close()
-	s.conn.Close()
-	return nil
+	// defer s.conn.Close()
+	// defer s.Channel.Close()
+
+	// status := struct{ Status uint32 }{uint32(code)}
+	// _, err := s.Channel.SendRequest("exit-status", false, ssh.Marshal(&status))
+	// if err != nil {
+	// 	return err
+	// }
+
+	return <-s.exitErrorCh
 }
 
 func (s *session) handlePtyReq(req *ssh.Request) {
